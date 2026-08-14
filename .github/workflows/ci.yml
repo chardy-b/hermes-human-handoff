@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install ruff
+      - run: ruff check src tests qa examples
+      - run: ruff format --check src tests qa examples
+      - run: python -m unittest discover -s tests -v
+      - run: python qa/leak_lint.py .
+      - run: bash -n scripts/*.sh qa/*.sh
+      - run: python -m pip wheel --wheel-dir /tmp/wheels .
+
+  live-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install display and VNC dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y xvfb x11vnc
+      - name: Install Chromium and noVNC
+        run: |
+          python -m pip install playwright==1.62.0
+          python -m playwright install --with-deps chromium
+          git -c advice.detachedHead=false clone --quiet --depth 1 --branch v1.7.0 https://github.com/novnc/noVNC.git /tmp/noVNC
+          test "$(git -C /tmp/noVNC rev-parse HEAD)" = "63107bd06d9e1f6136ff21aeda8cd62cbf0d433e"
+          browser=$(python - <<'PY'
+          import glob
+          paths = sorted(glob.glob(str(__import__('pathlib').Path.home() / '.cache/ms-playwright/chromium-*/chrome-linux*/chrome')), reverse=True)
+          assert paths, 'Playwright Chromium not found'
+          print(paths[0])
+          PY
+          )
+          echo "HUMAN_HANDOFF_BROWSER=$browser" >> "$GITHUB_ENV"
+          echo "HUMAN_HANDOFF_NOVNC_DIR=/tmp/noVNC" >> "$GITHUB_ENV"
+      - run: ./qa/smoke.sh
