@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>Human Handoff</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #080a0f; }
+    #screen { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+    #screen canvas { max-width: 100%; max-height: 100%; }
+    #status {
+      position: fixed; left: 50%; top: max(12px, env(safe-area-inset-top)); transform: translateX(-50%);
+      z-index: 10; padding: 8px 12px; border: 1px solid #303746; border-radius: 999px;
+      color: #d9e1ef; background: rgba(14, 18, 27, .92); font-size: 13px; letter-spacing: .01em;
+      box-shadow: 0 8px 30px rgba(0,0,0,.28);
+    }
+    #status.ready { color: #b7f7d0; border-color: #2c7650; }
+    #status.error { color: #ffc5c5; border-color: #8d3d48; }
+  </style>
+</head>
+<body>
+  <div id="status">Connecting…</div>
+  <div id="screen" aria-label="Remote browser"></div>
+  <script type="module">
+    import RFB from './core/rfb.js';
+
+    const status = document.getElementById('status');
+    const screen = document.getElementById('screen');
+    const capability = location.hash.slice(1);
+    history.replaceState(null, '', location.pathname + location.search);
+
+    function setStatus(text, kind = '') {
+      status.textContent = text;
+      status.className = kind;
+    }
+
+    if (!/^[A-Za-z0-9]{8}$/.test(capability)) {
+      setStatus('This handoff link is missing or invalid.', 'error');
+      throw new Error('invalid handoff capability');
+    }
+
+    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+    const basePath = location.pathname.replace(/[^/]*$/, '');
+    const websocketUrl = `${scheme}://${location.host}${basePath}websockify`;
+    const rfb = new RFB(screen, websocketUrl, { credentials: { password: capability } });
+    rfb.scaleViewport = true;
+    rfb.resizeSession = true;
+    rfb.clipViewport = false;
+    rfb.viewOnly = false;
+    rfb.background = '#080a0f';
+
+    rfb.addEventListener('connect', () => setStatus('You have control', 'ready'));
+    rfb.addEventListener('disconnect', event => {
+      setStatus(event.detail.clean ? 'Handoff ended' : 'Connection lost', event.detail.clean ? '' : 'error');
+    });
+    rfb.addEventListener('credentialsrequired', () => rfb.sendCredentials({ password: capability }));
+    rfb.addEventListener('securityfailure', () => setStatus('Handoff authorization failed', 'error'));
+  </script>
+</body>
+</html>

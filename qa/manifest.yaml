@@ -1,0 +1,24 @@
+name: hermes-human-handoff
+class: app
+requires_env: []
+requires_apps: []
+requires_tools:
+  - python3
+  - Xvfb
+  - x11vnc
+  - chromium-or-google-chrome
+  - tailscale
+forbidden_leaks:
+  - site-local-identifiers
+  - absolute-user-home-path
+  - private-tailnet-hostname
+  - credentials
+success_assertions:
+  - type: exit_code
+    value: "python3 -m unittest discover -s tests -v => 0"
+  - type: exit_code
+    value: "python3 qa/leak_lint.py . => 0"
+  - type: contains
+    value: "qa/smoke.sh output contains RFB and HANDOFF_SMOKE_OK"
+  - type: file_absent
+    value: "capability and disposable browser profile after stop"

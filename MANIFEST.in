@@ -1,0 +1,5 @@
+include SECURITY.md
+recursive-include examples *.py
+recursive-include qa *.cjs *.py *.sh *.yaml
+recursive-include scripts *.sh
+recursive-include skills *.md

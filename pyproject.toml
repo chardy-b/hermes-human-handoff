@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-human-handoff"
+version = "0.1.0"
+description = "Expiring Tailnet browser takeover for human-only agent workflow steps"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "Humanity Labs"}]
+dependencies = ["playwright==1.62.0", "websockify==0.13.0"]
+keywords = ["hermes-agent", "tailscale", "novnc", "human-in-the-loop", "captcha"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: Security",
+]
+
+[project.scripts]
+hermes-human-handoff = "hermes_human_handoff.cli:main"
+
+[project.urls]
+Repository = "https://github.com/humanitylabs-org/hermes-human-handoff"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hermes_human_handoff = ["assets/*.html"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
