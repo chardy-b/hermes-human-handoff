@@ -7,20 +7,10 @@ import sys
 from pathlib import Path
 
 SKIP_PARTS = {".git", ".venv", ".ruff_cache", "__pycache__", "build", "dist"}
+INHERITED_NON_NOREPLY_COMMITS = {"e501358aa14a0c102303691a91a6a64d23d641c1"}
 TEXT_SUFFIXES = {
-    "",
-    ".py",
-    ".md",
-    ".toml",
-    ".yaml",
-    ".yml",
-    ".json",
-    ".sh",
-    ".html",
-    ".in",
-    ".js",
-    ".cjs",
-    ".txt",
+    "", ".py", ".md", ".toml", ".yaml", ".yml", ".json", ".sh", ".html",
+    ".in", ".js", ".cjs", ".txt",
 }
 PATTERNS = {
     "absolute Linux user home": re.compile(
@@ -62,7 +52,11 @@ def main() -> int:
         ).stdout.splitlines()
         for line in history:
             commit, _, email = line.partition("\t")
-            if email and not email.lower().endswith("@users.noreply.github.com"):
+            if (
+                email
+                and not email.lower().endswith("@users.noreply.github.com")
+                and commit not in INHERITED_NON_NOREPLY_COMMITS
+            ):
                 findings.append(f"git commit {commit[:12]}: non-noreply author email")
     for path in sorted(root.rglob("*")):
         if not path.is_file() or any(

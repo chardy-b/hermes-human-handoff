@@ -35,7 +35,7 @@ if [[ ! -d "$PREFIX/noVNC/.git" ]] || [[ $(git -C "$PREFIX/noVNC" rev-parse HEAD
 fi
 
 python3 -m venv "$PREFIX/venv"
-"$PREFIX/venv/bin/python" -m pip install --quiet --disable-pip-version-check "$ROOT"
+"$PREFIX/venv/bin/python" -m pip install --quiet --disable-pip-version-check --constraint "$ROOT/requirements.txt" "$ROOT"
 if ! command -v google-chrome >/dev/null 2>&1 \
   && ! command -v chromium >/dev/null 2>&1 \
   && ! command -v chromium-browser >/dev/null 2>&1; then

@@ -238,11 +238,25 @@ def validate_target_url(value: str, purpose: str = "other") -> str:
 
 def validate_profile_directory(path: Path, *, create: bool = False) -> Path:
     raw_profile = path.expanduser()
+    if not raw_profile.is_absolute():
+        raw_profile = Path.cwd() / raw_profile
+    # Reject a symlink as the profile itself, but canonicalize existing parent
+    # aliases (for example mounted-volume compatibility links) once before
+    # validating and creating the protected path.
     if raw_profile.is_symlink():
         raise ValueError("browser profile must be a real directory")
-    profile = raw_profile.resolve()
-    if create:
-        profile.mkdir(parents=True, exist_ok=True, mode=0o700)
+    profile = raw_profile.resolve(strict=False)
+    current = Path(profile.anchor)
+    for component in profile.parts[1:]:
+        current /= component
+        if current.is_symlink():
+            raise ValueError("browser profile path must not contain symlinks")
+        if current.exists() and not current.is_dir():
+            raise ValueError("browser profile path component must be a directory")
+        if create and not current.exists():
+            current.mkdir(mode=0o700)
+        if current.exists() and current.stat().st_mode & 0o022:
+            raise ValueError("browser profile path must not be writable by group or other users")
     if not profile.is_dir() or profile.is_symlink():
         raise ValueError("browser profile must be a real directory")
     if profile.stat().st_uid != os.getuid():
@@ -492,7 +506,28 @@ def process_cmdline(pid: int) -> str:
         return ""
 
 
-def worker_owned_by_session(pid: int, directory: Path) -> bool:
+def process_start_time(pid: int) -> int | None:
+    try:
+        # Field 2 (comm) is parenthesized and can contain spaces. Split after
+        # its final ')' so field 22 (starttime) remains at a stable offset.
+        fields_after_comm = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return int(fields_after_comm[19])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def process_matches(pid: int, expected: Any) -> bool:
+    try:
+        return process_start_time(pid) == int(expected)
+    except (TypeError, ValueError):
+        return False
+
+
+def worker_owned_by_session(
+    pid: int, directory: Path, expected_start_time: Any = None
+) -> bool:
+    if expected_start_time is not None and not process_matches(pid, expected_start_time):
+        return False
     command = process_cmdline(pid)
     return bool(
         command
@@ -506,6 +541,9 @@ def child_owned_by_session(
     name: str, pid: int, directory: Path, runtime: dict[str, Any]
 ) -> bool:
     command = process_cmdline(pid)
+    expected = runtime.get("child_start_times", {}).get(str(pid))
+    if expected is not None and not process_matches(pid, expected):
+        return False
     if not command:
         return False
     if name == "browser":
@@ -574,6 +612,20 @@ def session_worker_pid(
     return 0
 
 
+def session_worker_start_time(
+    directory: Path,
+    public: dict[str, Any] | None = None,
+    runtime: dict[str, Any] | None = None,
+) -> Any:
+    candidates: list[Any] = [
+        (public or {}).get("worker_start_time"),
+        (runtime or {}).get("worker_start_time"),
+    ]
+    with contextlib.suppress(Exception):
+        candidates.append(read_json(directory / "launcher.json").get("worker_start_time"))
+    return next((candidate for candidate in candidates if candidate is not None), None)
+
+
 def recovery_public(directory: Path, pid: int) -> dict[str, Any]:
     started_at = directory.stat().st_mtime
     purpose = "other"
@@ -602,7 +654,9 @@ def recover_stale_session(directory: Path) -> tuple[bool, list[str]]:
     with contextlib.suppress(Exception):
         runtime = read_json(directory / "runtime.json")
     pid = session_worker_pid(directory, public, runtime)
-    if worker_owned_by_session(pid, directory):
+    if worker_owned_by_session(
+        pid, directory, session_worker_start_time(directory, public, runtime)
+    ):
         return False, []
     if not public and not runtime and not (directory / "launcher.json").exists():
         if time.time() - directory.stat().st_mtime < ORPHAN_STARTUP_GRACE:
@@ -655,7 +709,9 @@ def recover_stale_sessions(request_expired_stop: bool = True) -> dict[str, Any]:
             with contextlib.suppress(Exception):
                 runtime = read_json(directory / "runtime.json")
             pid = session_worker_pid(directory, public, runtime)
-            if worker_owned_by_session(pid, directory):
+            if worker_owned_by_session(
+                pid, directory, session_worker_start_time(directory, public, runtime)
+            ):
                 if public.get("expires_at"):
                     expires = dt.datetime.fromisoformat(
                         str(public["expires_at"]).replace("Z", "+00:00")
@@ -682,7 +738,11 @@ class HandoffWorker:
         self.route: dict[str, Any] | None = None
         self.profile_lock: Any | None = None
         self.stop_requested = False
-        self.runtime: dict[str, Any] = {"children": [], "worker_pid": os.getpid()}
+        self.runtime: dict[str, Any] = {
+            "children": [],
+            "worker_pid": os.getpid(),
+            "worker_start_time": process_start_time(os.getpid()),
+        }
         self.started_at = time.time()
         self.expires_at = self.started_at + int(self.config["ttl"])
 
@@ -698,6 +758,7 @@ class HandoffWorker:
                 "started_at": iso_at(self.started_at),
                 "expires_at": iso_at(self.expires_at),
                 "worker_pid": os.getpid(),
+                "worker_start_time": self.runtime["worker_start_time"],
             }
         )
         existing.update(extra)
@@ -754,6 +815,7 @@ class HandoffWorker:
             log.close()
         self.children.append((name, process))
         self.runtime["children"] = [{"name": n, "pid": p.pid} for n, p in self.children]
+        self.runtime.setdefault("child_start_times", {})[str(process.pid)] = process_start_time(process.pid)
         self.write_runtime()
         return process
 
@@ -792,8 +854,21 @@ class HandoffWorker:
         shutil.copy2(source, webroot / "handoff.html")
         for name in ("core", "vendor"):
             source_dir = novnc / name
-            if not source_dir.is_dir():
-                raise RuntimeError(f"noVNC is missing {name}")
+            if not source_dir.is_dir() or source_dir.is_symlink():
+                raise RuntimeError(f"noVNC {name} must be a real directory")
+            if (
+                source_dir.stat().st_uid != os.getuid()
+                or source_dir.stat().st_mode & 0o022
+            ):
+                raise RuntimeError(f"noVNC {name} has unsafe ownership or permissions")
+            for item in source_dir.rglob("*"):
+                if (
+                    item.is_symlink()
+                    or not (item.is_file() or item.is_dir())
+                    or item.stat().st_uid != os.getuid()
+                    or item.stat().st_mode & 0o022
+                ):
+                    raise RuntimeError(f"noVNC {name} contains unsafe files")
             (webroot / name).symlink_to(source_dir, target_is_directory=True)
         return webroot
 
@@ -1186,7 +1261,10 @@ def cmd_start(args: argparse.Namespace) -> int:
         )
     finally:
         log.close()
-    atomic_json(directory / "launcher.json", {"worker_pid": worker.pid})
+    atomic_json(
+        directory / "launcher.json",
+        {"worker_pid": worker.pid, "worker_start_time": process_start_time(worker.pid)},
+    )
 
     deadline = time.monotonic() + 35
     public_path = directory / "public.json"
@@ -1304,7 +1382,8 @@ def cmd_stop(args: argparse.Namespace) -> int:
     with contextlib.suppress(Exception):
         runtime = read_json(directory / "runtime.json")
     pid = session_worker_pid(directory, public, runtime)
-    if worker_owned_by_session(pid, directory):
+    expected_start_time = session_worker_start_time(directory, public, runtime)
+    if worker_owned_by_session(pid, directory, expected_start_time):
         os.kill(pid, signal.SIGTERM)
     else:
         _recovered, errors = recover_stale_session(directory)
@@ -1320,7 +1399,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
         ):
             print(json.dumps(current, indent=2, sort_keys=True))
             return 0
-        if not worker_owned_by_session(pid, directory):
+        if not worker_owned_by_session(pid, directory, expected_start_time):
             _recovered, errors = recover_stale_session(directory)
             current = read_json(public_path)
             print(json.dumps(current, indent=2, sort_keys=True))

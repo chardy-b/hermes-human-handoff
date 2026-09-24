@@ -19,6 +19,8 @@ This protects card details, passwords, OTPs, identity fields, and similar values
 
 It does not make data cryptographically inaccessible to a malicious host administrator or compromised browser. Use a local-browser or separately trusted payment/identity broker when that stronger boundary is required.
 
+The loopback CDP endpoint is intentionally unauthenticated. This bounded change does not claim to fix that single-user-host limitation: any process already trusted as the same OS account can attach to the browser while a session is running. Restrict OS-account access and do not run untrusted same-user workloads on the endpoint host.
+
 ## Reporting vulnerabilities
 
 Open a private security advisory at https://github.com/humanitylabs-org/hermes-human-handoff/security/advisories/new. Do not include live credentials, Tailnet hostnames, handoff URLs, browser profiles, or payment information in an issue.

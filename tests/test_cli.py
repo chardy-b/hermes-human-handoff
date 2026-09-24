@@ -383,6 +383,104 @@ class CliUnitTests(unittest.TestCase):
             )
             self.assertFalse((destination / "SingletonLock").exists())
 
+    def test_profile_validation_rejects_symlinked_profile_leaf(self):
+        with tempfile.TemporaryDirectory(dir="/mnt/HC_Volume_106820083/cache") as temp:
+            root = Path(temp)
+            target = root / "target"
+            target.mkdir(mode=0o700)
+            leaf = root / "profile"
+            leaf.symlink_to(target, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "must be a real directory"):
+                cli.validate_profile_directory(leaf)
+
+    def test_profile_validation_allows_symlinked_parent_after_canonicalization(self):
+        with tempfile.TemporaryDirectory(dir="/mnt/HC_Volume_106820083/cache") as temp:
+            root = Path(temp)
+            canonical_parent = root / "canonical"
+            canonical_parent.mkdir(mode=0o700)
+            alias = root / "alias"
+            alias.symlink_to(canonical_parent, target_is_directory=True)
+            expected = canonical_parent / "profile"
+            self.assertEqual(
+                cli.validate_profile_directory(alias / "profile", create=True), expected
+            )
+
+    def test_profile_validation_rejects_writable_parent_component(self):
+        with tempfile.TemporaryDirectory(dir="/mnt/HC_Volume_106820083/cache") as temp:
+            root = Path(temp)
+            writable = root / "writable"
+            writable.mkdir(mode=0o777)
+            writable.chmod(0o777)
+            profile = writable / "profile"
+            profile.mkdir(mode=0o700)
+            with self.assertRaisesRegex(ValueError, "writable by group or other"):
+                cli.validate_profile_directory(profile)
+
+    def test_prepare_webroot_rejects_writable_nested_novnc_directory(self):
+        with tempfile.TemporaryDirectory(dir="/mnt/HC_Volume_106820083/cache") as temp:
+            root = Path(temp)
+            session = root / "hh-20260101-010101-abcdef"
+            session.mkdir(mode=0o700)
+            cli.atomic_json(
+                session / "config.json",
+                {
+                    "session_id": session.name,
+                    "url": "https://example.invalid",
+                    "ttl": 120,
+                    "purpose": "captcha",
+                    "local_only": True,
+                    "profile_mode": "disposable",
+                    "profile_path": None,
+                },
+            )
+            novnc = root / "novnc"
+            for name in ("core", "vendor"):
+                (novnc / name).mkdir(parents=True, mode=0o700)
+            unsafe = novnc / "core" / "nested"
+            unsafe.mkdir(mode=0o777)
+            unsafe.chmod(0o777)
+            worker = cli.HandoffWorker(session / "config.json")
+            with self.assertRaisesRegex(RuntimeError, "unsafe"):
+                worker.prepare_webroot(novnc)
+
+    def test_child_identity_rejects_process_start_time_mismatch(self):
+        runtime = {
+            "profile": "/private/profile",
+            "child_start_times": {"123": 456},
+        }
+        with (
+            mock.patch.object(
+                cli,
+                "process_cmdline",
+                return_value="chrome --user-data-dir=/private/profile",
+            ),
+            mock.patch.object(cli, "process_start_time", return_value=789),
+        ):
+            self.assertFalse(
+                cli.child_owned_by_session("browser", 123, Path("/state"), runtime)
+            )
+
+    def test_worker_identity_rejects_process_start_time_mismatch(self):
+        directory = Path("/state/hh-20260101-010101-abcdef")
+        with (
+            mock.patch.object(
+                cli,
+                "process_cmdline",
+                return_value=(
+                    "python -m hermes_human_handoff.cli _worker "
+                    "/state/hh-20260101-010101-abcdef/config.json"
+                ),
+            ),
+            mock.patch.object(cli, "process_start_time", return_value=789),
+        ):
+            self.assertFalse(cli.worker_owned_by_session(123, directory, 456))
+
+    def test_process_start_time_parses_comm_with_spaces(self):
+        # /proc/PID/stat field 2 is parenthesized and may contain spaces.
+        stat = "123 (browser helper) S " + " ".join(str(i) for i in range(4, 23))
+        with mock.patch.object(Path, "read_text", return_value=stat):
+            self.assertEqual(cli.process_start_time(123), 22)
+
     def test_profile_preferences_enable_addresses_and_disable_payment_storage(self):
         with tempfile.TemporaryDirectory() as temp:
             profile = Path(temp) / "profile"
@@ -414,10 +512,13 @@ class CliUnitTests(unittest.TestCase):
                 },
             )
             worker = cli.HandoffWorker(directory / "config.json")
-            self.assertEqual(worker.prepare_profile(), profile)
-            (profile / "Default" / "marker").write_text("kept")
+            canonical_profile = profile.resolve()
+            self.assertEqual(worker.prepare_profile(), canonical_profile)
+            (canonical_profile / "Default" / "marker").write_text("kept")
             worker.cleanup()
-            self.assertEqual((profile / "Default" / "marker").read_text(), "kept")
+            self.assertEqual(
+                (canonical_profile / "Default" / "marker").read_text(), "kept"
+            )
 
     def test_worker_initialization_failure_scrubs_config(self):
         with tempfile.TemporaryDirectory() as temp:
