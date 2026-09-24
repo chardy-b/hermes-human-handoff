@@ -122,6 +122,7 @@ class CliUnitTests(unittest.TestCase):
             "dns_name": "node.invalid",
             "https_port": 9440,
             "target": "http://127.0.0.1:6100",
+            "done_target": "http://127.0.0.1:6101",
         }
         status = {"AllowFunnel": {"node.invalid:9440": True}}
         with (
@@ -155,6 +156,23 @@ class CliUnitTests(unittest.TestCase):
         self.assertIn("credentials: { password: capability }", page)
         self.assertNotIn("?password=", page)
         self.assertNotIn("localStorage", page)
+
+    def test_handoff_done_is_capability_scoped_and_updates_status(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            cli.atomic_json(directory / "capability.json", {"capability": "Ab12Cd34"})
+            cli.atomic_json(directory / "public.json", {"status": "ready"})
+            self.assertFalse(cli.mark_handed_back(directory, "wrongxxx"))
+            self.assertTrue(cli.mark_handed_back(directory, "Ab12Cd34"))
+            self.assertEqual(cli.read_json(directory / "public.json")["completion"], "done")
+            self.assertFalse(cli.mark_handed_back(directory, "Ab12Cd34"))
+
+    def test_handoff_page_done_control_is_not_in_url(self):
+        page = (ROOT / "src/hermes_human_handoff/assets/handoff.html").read_text()
+        self.assertIn('id="done"', page)
+        self.assertIn("/handoff-done", page)
+        self.assertIn("X-Handoff-Capability", page)
+        self.assertNotIn("?capability", page)
 
     def test_remove_route_refuses_foreign_mapping(self):
         route = {
@@ -194,6 +212,7 @@ class CliUnitTests(unittest.TestCase):
                 "dns_name": "node.invalid",
                 "https_port": 9440,
                 "target": "http://127.0.0.1:6100",
+                "done_target": "http://127.0.0.1:6101",
             }
 
             def assert_journaled(value):
@@ -208,7 +227,7 @@ class CliUnitTests(unittest.TestCase):
                     cli, "activate_tailnet_route", side_effect=assert_journaled
                 ) as activate,
             ):
-                worker.publish_route(6100, "tailscale")
+                worker.publish_route(6100, 6101, "tailscale")
             activate.assert_called_once_with(route)
 
     def test_runtime_only_orphan_route_is_recovered(self):
@@ -519,6 +538,37 @@ class CliUnitTests(unittest.TestCase):
             self.assertEqual(
                 (canonical_profile / "Default" / "marker").read_text(), "kept"
             )
+
+    def test_wait_returns_done_completion(self):
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            mock.patch.dict(os.environ, {"HUMAN_HANDOFF_HOME": temp}),
+        ):
+            session_id = "hh-20260101-010101-abcdef"
+            directory = Path(temp) / "sessions" / session_id
+            cli.atomic_json(
+                directory / "public.json",
+                {"status": "stopped", "completion": "done"},
+            )
+            args = type("Args", (), {"session_id": session_id, "timeout": 1.0})()
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(cli.cmd_wait(args), 0)
+            self.assertEqual(json.loads(output.getvalue())["completion"], "done")
+
+    def test_wait_times_out_without_completion(self):
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            mock.patch.dict(os.environ, {"HUMAN_HANDOFF_HOME": temp}),
+        ):
+            session_id = "hh-20260101-010101-abcdef"
+            directory = Path(temp) / "sessions" / session_id
+            cli.atomic_json(directory / "public.json", {"status": "ready"})
+            args = type("Args", (), {"session_id": session_id, "timeout": 0.0})()
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(cli.cmd_wait(args), 1)
+            self.assertEqual(json.loads(output.getvalue())["error"], "wait timed out")
 
     def test_worker_initialization_failure_scrubs_config(self):
         with tempfile.TemporaryDirectory() as temp:

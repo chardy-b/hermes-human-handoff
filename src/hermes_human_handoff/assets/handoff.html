@@ -11,25 +11,36 @@
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #080a0f; }
     #screen { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
     #screen canvas { max-width: 100%; max-height: 100%; }
-    #status {
+    #controls {
       position: fixed; left: 50%; top: max(12px, env(safe-area-inset-top)); transform: translateX(-50%);
+      z-index: 10; display: flex; align-items: center; gap: 10px;
+    }
+    #status {
       z-index: 10; padding: 8px 12px; border: 1px solid #303746; border-radius: 999px;
       color: #d9e1ef; background: rgba(14, 18, 27, .92); font-size: 13px; letter-spacing: .01em;
       box-shadow: 0 8px 30px rgba(0,0,0,.28);
     }
     #status.ready { color: #b7f7d0; border-color: #2c7650; }
+    #done { display: none; min-height: 40px; padding: 8px 16px; border: 1px solid #5b8cff; border-radius: 999px; color: #fff; background: #2454b8; font: inherit; font-weight: 700; cursor: pointer; touch-action: manipulation; }
+    #done.visible { display: inline-block; }
+    #done:disabled { opacity: .65; cursor: wait; }
     #status.error { color: #ffc5c5; border-color: #8d3d48; }
   </style>
 </head>
 <body>
-  <div id="status">Connecting…</div>
+  <div id="controls">
+    <div id="status">Connecting…</div>
+    <button id="done" type="button" aria-label="Done, return control to the agent">Done</button>
+  </div>
   <div id="screen" aria-label="Remote browser"></div>
   <script type="module">
     import RFB from './core/rfb.js';
 
     const status = document.getElementById('status');
+    const done = document.getElementById('done');
     const screen = document.getElementById('screen');
     const capability = location.hash.slice(1);
+    let handedBack = false;
     history.replaceState(null, '', location.pathname + location.search);
 
     function setStatus(text, kind = '') {
@@ -52,8 +63,23 @@
     rfb.viewOnly = false;
     rfb.background = '#080a0f';
 
-    rfb.addEventListener('connect', () => setStatus('You have control', 'ready'));
+    rfb.addEventListener('connect', () => { setStatus('You have control', 'ready'); done.classList.add('visible'); });
+    done.addEventListener('click', async () => {
+      done.disabled = true;
+      try {
+        const response = await fetch('/handoff-done', { method: 'POST', headers: { 'X-Handoff-Capability': capability } });
+        if (!response.ok) throw new Error('completion rejected');
+        handedBack = true;
+        setStatus('Control returned to agent', 'ready');
+        done.classList.remove('visible');
+        rfb.disconnect();
+      } catch (_) {
+        done.disabled = false;
+        setStatus('Could not return control; try again', 'error');
+      }
+    });
     rfb.addEventListener('disconnect', event => {
+      if (handedBack) return;
       setStatus(event.detail.clean ? 'Handoff ended' : 'Connection lost', event.detail.clean ? '' : 'error');
     });
     rfb.addEventListener('credentialsrequired', () => rfb.sendCredentials({ password: capability }));

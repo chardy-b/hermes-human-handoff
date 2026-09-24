@@ -93,10 +93,17 @@ Use exact selectors and sanitized exceptions around passwords or other secrets. 
 ## Human gate
 
 1. Stop automation on the sensitive page. Keep the browser and worker alive.
-2. Send the single current `handoff_url` and one concrete instruction, such as “Complete the CAPTCHA and reply done.”
+2. Send the single current `handoff_url` and one concrete instruction, such as “Complete the CAPTCHA, submit the form, then press Done.”
 3. During takeover, make no screenshot, DOM, accessibility-tree, OCR, console, trace, recording, or browser-history calls against the session.
 4. The user performs the CAPTCHA, OTP, card entry, consent, identity action, or final approval and submits it.
-5. Wait for the user to report completion. Do not poll sensitive fields while they are populated.
+5. Tell the user to press the visible **Done** button. The button appears only after the authenticated VNC connection is established; it sends a session-scoped completion signal in a header, never in the URL.
+6. Wait without inspecting the browser:
+
+```bash
+hermes-human-handoff wait <session_id> --timeout <ttl-seconds>
+```
+
+Resume only when this returns `completion: done`. Do not resume based only on a chat reply.
 
 For external legal or financial effects, the user's takeover and click are the approval gate. A staged order, snapshot, or previous credential is never approval.
 

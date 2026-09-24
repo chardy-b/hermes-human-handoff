@@ -16,6 +16,8 @@ import string
 import subprocess
 import sys
 import time
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -85,6 +87,46 @@ def read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"expected object in {path}")
     return value
+
+
+def mark_handed_back(session_dir: Path, capability: str) -> bool:
+    """Acknowledge Done using the exact capability already used by VNC."""
+    try:
+        stored = read_json(session_dir / "capability.json").get("capability")
+        if not isinstance(stored, str) or not secrets.compare_digest(stored, capability):
+            return False
+        public_path = session_dir / "public.json"
+        public = read_json(public_path)
+        if public.get("status") != "ready":
+            return False
+        public.update({"status": "handed_back", "completion": "done", "handed_back_at": iso_at(time.time())})
+        atomic_json(public_path, public)
+        return True
+    except (FileNotFoundError, ValueError, TypeError):
+        return False
+
+
+class _DoneHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:  # noqa: N802
+        # Tailscale Serve strips the configured --set-path prefix before
+        # proxying to this dedicated loopback-only completion server.
+        if self.path not in {"/", "/handoff-done"}:
+            self.send_error(404)
+            return
+        capability = self.headers.get("X-Handoff-Capability", "")
+        ok = mark_handed_back(self.server.session_dir, capability)  # type: ignore[attr-defined]
+        self.send_response(204 if ok else 403)
+        self.end_headers()
+
+    def log_message(self, *_args: Any) -> None:
+        return
+
+
+def start_done_server(session_dir: Path, port: int = 0) -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer(("127.0.0.1", port), _DoneHandler)
+    server.session_dir = session_dir  # type: ignore[attr-defined]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
 
 
 def executable_from(
@@ -393,12 +435,18 @@ def choose_https_port(status: dict[str, Any]) -> int:
     raise RuntimeError("no free Human Handoff HTTPS port in 9440-9499")
 
 
-def route_proxy(status: dict[str, Any], dns_name: str, https_port: int) -> str | None:
+def route_path_proxy(
+    status: dict[str, Any], dns_name: str, https_port: int, path: str
+) -> str | None:
     web = status.get("Web", {}).get(f"{dns_name}:{https_port}", {})
     handlers = web.get("Handlers", {}) if isinstance(web, dict) else {}
-    root = handlers.get("/", {}) if isinstance(handlers, dict) else {}
-    proxy = root.get("Proxy") if isinstance(root, dict) else None
+    handler = handlers.get(path, {}) if isinstance(handlers, dict) else {}
+    proxy = handler.get("Proxy") if isinstance(handler, dict) else None
     return str(proxy) if proxy else None
+
+
+def route_proxy(status: dict[str, Any], dns_name: str, https_port: int) -> str | None:
+    return route_path_proxy(status, dns_name, https_port, "/")
 
 
 def route_allows_funnel(status: dict[str, Any], dns_name: str, https_port: int) -> bool:
@@ -411,7 +459,9 @@ def route_allows_funnel(status: dict[str, Any], dns_name: str, https_port: int) 
     return bool(allowed)
 
 
-def plan_tailnet_route(web_port: int, tailscale_binary: str) -> dict[str, Any]:
+def plan_tailnet_route(
+    web_port: int, done_port: int, tailscale_binary: str
+) -> dict[str, Any]:
     base, status = tailscale_base_command(tailscale_binary)
     dns_name = status["Self"]["DNSName"].rstrip(".")
     if not dns_name:
@@ -419,11 +469,13 @@ def plan_tailnet_route(web_port: int, tailscale_binary: str) -> dict[str, Any]:
     before = serve_status(base)
     https_port = choose_https_port(before)
     target = f"http://127.0.0.1:{web_port}"
+    done_target = f"http://127.0.0.1:{done_port}"
     return {
         "base_command": base,
         "dns_name": dns_name,
         "https_port": https_port,
         "target": target,
+        "done_target": done_target,
         "neighbor_keys_before": sorted(before.get("Web", {}).keys()),
     }
 
@@ -433,6 +485,7 @@ def activate_tailnet_route(route: dict[str, Any]) -> None:
     dns_name = str(route["dns_name"])
     https_port = int(route["https_port"])
     target = str(route["target"])
+    done_target = str(route["done_target"])
     current = serve_status(base)
     if route_proxy(current, dns_name, https_port) is not None:
         raise RuntimeError("temporary Tailscale Serve port is no longer free")
@@ -447,10 +500,35 @@ def activate_tailnet_route(route: dict[str, Any]) -> None:
     )
     if result.returncode != 0:
         raise RuntimeError("Tailscale Serve rejected the temporary route")
+    result = subprocess.run(
+        base
+        + [
+            "serve",
+            "--bg",
+            "--yes",
+            f"--https={https_port}",
+            "--set-path=/handoff-done",
+            done_target,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        subprocess.run(
+            base + ["serve", f"--https={https_port}", "off"],
+            capture_output=True,
+            text=True,
+        )
+        raise RuntimeError("Tailscale Serve rejected the completion route")
     try:
         after = serve_status(base)
         if route_proxy(after, dns_name, https_port) != target:
             raise RuntimeError("temporary Tailscale Serve route failed verification")
+        if (
+            route_path_proxy(after, dns_name, https_port, "/handoff-done")
+            != done_target
+        ):
+            raise RuntimeError("temporary completion route failed verification")
         if route_allows_funnel(after, dns_name, https_port):
             raise RuntimeError("refusing a handoff route with Tailscale Funnel enabled")
     except Exception:
@@ -474,6 +552,7 @@ def remove_tailnet_route(route: dict[str, Any]) -> None:
     dns_name = str(route["dns_name"])
     https_port = int(route["https_port"])
     target = str(route["target"])
+    done_target = str(route.get("done_target") or "")
     current = serve_status(base)
     current_proxy = route_proxy(current, dns_name, https_port)
     if current_proxy is None:
@@ -481,6 +560,13 @@ def remove_tailnet_route(route: dict[str, Any]) -> None:
     if current_proxy != target:
         raise RuntimeError(
             "refusing to remove a Tailscale route no longer owned by this session"
+        )
+    if done_target and (
+        route_path_proxy(current, dns_name, https_port, "/handoff-done")
+        != done_target
+    ):
+        raise RuntimeError(
+            "refusing to remove a completion route no longer owned by this session"
         )
     result = subprocess.run(
         base + ["serve", f"--https={https_port}", "off"], capture_output=True, text=True
@@ -737,6 +823,7 @@ class HandoffWorker:
         self.children: list[tuple[str, subprocess.Popen[Any]]] = []
         self.route: dict[str, Any] | None = None
         self.profile_lock: Any | None = None
+        self.done_server: ThreadingHTTPServer | None = None
         self.stop_requested = False
         self.runtime: dict[str, Any] = {
             "children": [],
@@ -769,8 +856,10 @@ class HandoffWorker:
         value["route"] = self.route
         atomic_json(self.session_dir / "runtime.json", value)
 
-    def publish_route(self, web_port: int, tailscale_binary: str) -> None:
-        self.route = plan_tailnet_route(web_port, tailscale_binary)
+    def publish_route(
+        self, web_port: int, done_port: int, tailscale_binary: str
+    ) -> None:
+        self.route = plan_tailnet_route(web_port, done_port, tailscale_binary)
         # Journal exact ownership before the external Serve side effect. A
         # killed worker can then remove only this route during stale recovery.
         self.write_runtime()
@@ -907,13 +996,15 @@ class HandoffWorker:
             self.write_public("failed", error="no free X display")
             return 2
 
-        vnc_port, web_port, cdp_port = (
+        vnc_port, web_port, cdp_port, done_port = (
+            free_loopback_port(),
             free_loopback_port(),
             free_loopback_port(),
             free_loopback_port(),
         )
-        while len({vnc_port, web_port, cdp_port}) != 3:
-            vnc_port, web_port, cdp_port = (
+        while len({vnc_port, web_port, cdp_port, done_port}) != 4:
+            vnc_port, web_port, cdp_port, done_port = (
+                free_loopback_port(),
                 free_loopback_port(),
                 free_loopback_port(),
                 free_loopback_port(),
@@ -931,6 +1022,7 @@ class HandoffWorker:
                 "vnc_port": vnc_port,
                 "web_port": web_port,
                 "cdp_port": cdp_port,
+                "done_port": done_port,
                 "profile": str(profile),
             }
         )
@@ -996,6 +1088,7 @@ class HandoffWorker:
                 env,
             )
             wait_http(f"http://127.0.0.1:{web_port}/handoff.html")
+            self.done_server = start_done_server(self.session_dir, done_port)
 
             browser_args = [
                 deps["browser"],
@@ -1027,7 +1120,7 @@ class HandoffWorker:
             if self.config["local_only"]:
                 handoff_base = f"http://127.0.0.1:{web_port}"
             else:
-                self.publish_route(web_port, deps["tailscale"])
+                self.publish_route(web_port, done_port, deps["tailscale"])
                 handoff_base = (
                     f"https://{self.route['dns_name']}:{self.route['https_port']}"
                 )
@@ -1049,6 +1142,10 @@ class HandoffWorker:
             )
 
             while not self.stop_requested and time.time() < self.expires_at:
+                current = read_json(self.session_dir / "public.json")
+                if current.get("status") == "handed_back":
+                    self.stop_requested = True
+                    break
                 for name, process in self.children:
                     if process.poll() is not None:
                         raise RuntimeError(f"{name} exited unexpectedly")
@@ -1104,6 +1201,10 @@ class HandoffWorker:
 
     def cleanup(self) -> str | None:
         error: str | None = None
+        if self.done_server is not None:
+            self.done_server.shutdown()
+            self.done_server.server_close()
+            self.done_server = None
         if self.route:
             try:
                 remove_tailnet_route(self.route)
@@ -1358,6 +1459,25 @@ def cmd_run(args: argparse.Namespace) -> int:
     return int(result.returncode)
 
 
+def cmd_wait(args: argparse.Namespace) -> int:
+    public_path = session_path(args.session_id) / "public.json"
+    deadline = time.monotonic() + max(0.0, float(args.timeout))
+    while True:
+        current = read_json(public_path)
+        if current.get("completion") == "done":
+            print(json.dumps(current, indent=2, sort_keys=True))
+            return 0
+        if current.get("status") in {"failed", "expired", "stopped"}:
+            print(json.dumps(current, indent=2, sort_keys=True))
+            return 2
+        if time.monotonic() >= deadline:
+            value = dict(current)
+            value["error"] = "wait timed out"
+            print(json.dumps(value, indent=2, sort_keys=True))
+            return 1
+        time.sleep(0.2)
+
+
 def cmd_stop(args: argparse.Namespace) -> int:
     directory = session_path(args.session_id)
     public_path = directory / "public.json"
@@ -1515,6 +1635,15 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("script")
     run.add_argument("script_args", nargs=argparse.REMAINDER)
     run.set_defaults(func=cmd_run)
+
+    wait = sub.add_parser(
+        "wait", help="wait for the human to press Done or for the handoff to end"
+    )
+    wait.add_argument("session_id")
+    wait.add_argument(
+        "--timeout", type=float, default=DEFAULT_TTL, help="maximum seconds to wait"
+    )
+    wait.set_defaults(func=cmd_wait)
 
     stop = sub.add_parser(
         "stop", help="retire a handoff and destroy any disposable browser profile"
