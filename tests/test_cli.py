@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import io
 import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.request
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -434,6 +438,59 @@ class CliUnitTests(unittest.TestCase):
             profile.mkdir(mode=0o700)
             with self.assertRaisesRegex(ValueError, "writable by group or other"):
                 cli.validate_profile_directory(profile)
+
+    def test_prepare_webroot_serves_mobile_module_and_page(self):
+        # Exercise the actual worker webroot with a loopback static server only.
+        # No real handoff, remote browser, capability or credentials are used.
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+            root = Path(temp)
+            session = root / "session"
+            session.mkdir(mode=0o700)
+            cli.atomic_json(session / "config.json", {"ttl": 120})
+            novnc = root / "novnc"
+            for name in ("core", "vendor"):
+                (novnc / name).mkdir(parents=True, mode=0o700)
+            worker = cli.HandoffWorker(session / "config.json")
+            webroot = worker.prepare_webroot(novnc)
+
+            class QuietHandler(SimpleHTTPRequestHandler):
+                def log_message(self, *_args):
+                    pass
+
+            handler = functools.partial(QuietHandler, directory=str(webroot))
+            with ThreadingHTTPServer(("127.0.0.1", 0), handler) as server:
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    base = f"http://127.0.0.1:{server.server_port}"
+                    for name in ("handoff.html", "mobile-keyboard.js"):
+                        with urllib.request.urlopen(f"{base}/{name}") as response:
+                            self.assertEqual(response.status, 200)
+                            self.assertEqual(
+                                response.read(),
+                                (ROOT / "src/hermes_human_handoff/assets" / name).read_bytes(),
+                            )
+                            if name.endswith(".js"):
+                                self.assertIn(response.headers.get_content_type(),
+                                              ("text/javascript", "application/javascript"))
+                finally:
+                    server.shutdown()
+                    thread.join()
+
+    def test_mobile_input_privacy_and_asset_packaging(self):
+        assets = ROOT / "src/hermes_human_handoff/assets"
+        page = (assets / "handoff.html").read_text()
+        bridge = (assets / "mobile-keyboard.js").read_text()
+        self.assertIn("assets/*.js", (ROOT / "pyproject.toml").read_text())
+        self.assertIn("from './mobile-keyboard.js'", page)
+        self.assertIn("initLogging('none')", page)
+        for attribute in ('autocomplete="off"', 'autocorrect="off"',
+                          'autocapitalize="off"', 'spellcheck="false"'):
+            self.assertIn(attribute, page)
+        for forbidden in ("localStorage", "sessionStorage", "indexedDB",
+                          "clipboardPasteFrom", "console.", "navigator.clipboard"):
+            self.assertNotIn(forbidden, page + bridge)
+        self.assertNotIn("fetch(", bridge)
 
     def test_prepare_webroot_rejects_writable_nested_novnc_directory(self):
         with tempfile.TemporaryDirectory(dir="/mnt/HC_Volume_106820083/cache") as temp:

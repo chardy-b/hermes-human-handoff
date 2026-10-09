@@ -9,10 +9,11 @@
     :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #080a0f; }
-    #screen { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+    #viewport { position: absolute; inset: 0; display: flex; flex-direction: column; }
+    #screen { min-height: 0; flex: 1; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
     #screen canvas { max-width: 100%; max-height: 100%; }
     #controls {
-      position: fixed; left: 50%; top: max(12px, env(safe-area-inset-top)); transform: translateX(-50%);
+      position: relative; flex: none; justify-content: center; flex-wrap: wrap; padding: max(8px, env(safe-area-inset-top)) 8px 8px;
       z-index: 10; display: flex; align-items: center; gap: 10px;
     }
     #status {
@@ -21,24 +22,43 @@
       box-shadow: 0 8px 30px rgba(0,0,0,.28);
     }
     #status.ready { color: #b7f7d0; border-color: #2c7650; }
-    #done { display: none; min-height: 40px; padding: 8px 16px; border: 1px solid #5b8cff; border-radius: 999px; color: #fff; background: #2454b8; font: inherit; font-weight: 700; cursor: pointer; touch-action: manipulation; }
-    #done.visible { display: inline-block; }
-    #done:disabled { opacity: .65; cursor: wait; }
+    #done, #keyboard { display: none; min-height: 44px; padding: 8px 16px; border: 1px solid #5b8cff; border-radius: 999px; color: #fff; background: #2454b8; font: inherit; font-weight: 700; cursor: pointer; touch-action: manipulation; }
+    #done.visible, #keyboard.visible { display: inline-block; }
+    #done:disabled, #keyboard:disabled { opacity: .65; cursor: wait; }
+    #mobile-input { position: absolute; left: 50%; top: 0; width: 1px; height: 1px; opacity: .01; padding: 0; border: 0; font-size: 16px; pointer-events: none; }
     #status.error { color: #ffc5c5; border-color: #8d3d48; }
   </style>
 </head>
 <body>
+  <div id="viewport">
   <div id="controls">
     <div id="status">Connecting…</div>
+    <button id="keyboard" type="button" disabled aria-label="Open keyboard for remote browser">Keyboard</button>
     <button id="done" type="button" aria-label="Done, return control to the agent">Done</button>
   </div>
   <div id="screen" aria-label="Remote browser"></div>
+  <textarea id="mobile-input" aria-label="Remote keyboard input" inputmode="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="-1" disabled></textarea>
+  </div>
   <script type="module">
     import RFB from './core/rfb.js';
+    import { initLogging } from './core/util/logging.js';
+    import { createMobileKeyboard, fitVisualViewport } from './mobile-keyboard.js';
+
+    // noVNC info/debug logging can contain individual keysyms.
+    initLogging('none');
 
     const status = document.getElementById('status');
     const done = document.getElementById('done');
     const screen = document.getElementById('screen');
+    const keyboard = document.getElementById('keyboard');
+    const viewport = document.getElementById('viewport');
+    const updateViewport = () => {
+      if (window.visualViewport) fitVisualViewport(window.visualViewport, viewport);
+    };
+    window.visualViewport?.addEventListener('resize', updateViewport);
+    window.visualViewport?.addEventListener('scroll', updateViewport);
+    updateViewport();
+    let connected = false;
     const capability = location.hash.slice(1);
     let handedBack = false;
     history.replaceState(null, '', location.pathname + location.search);
@@ -63,9 +83,28 @@
     rfb.viewOnly = false;
     rfb.background = '#080a0f';
 
-    rfb.addEventListener('connect', () => { setStatus('You have control', 'ready'); done.classList.add('visible'); });
-    done.addEventListener('click', async () => {
+    const mobile = createMobileKeyboard(document.getElementById('mobile-input'), keysym => rfb.sendKey(keysym));
+    keyboard.addEventListener('click', () => mobile.focus());
+    function disableInput() {
+      mobile.disable();
+      keyboard.disabled = true;
+      keyboard.classList.remove('visible');
       done.disabled = true;
+      done.classList.remove('visible');
+    }
+    rfb.addEventListener('connect', () => {
+      connected = true;
+      setStatus('You have control', 'ready');
+      done.disabled = false;
+      done.classList.add('visible');
+      keyboard.disabled = false;
+      keyboard.classList.add('visible');
+      mobile.enable();
+    });
+    done.addEventListener('click', async () => {
+      if (!connected || handedBack) return;
+      disableInput();
+      rfb.viewOnly = true;
       try {
         const response = await fetch('/handoff-done', { method: 'POST', headers: { 'X-Handoff-Capability': capability } });
         if (!response.ok) throw new Error('completion rejected');
@@ -74,16 +113,34 @@
         done.classList.remove('visible');
         rfb.disconnect();
       } catch (_) {
+        if (!connected || handedBack) return;
+        rfb.viewOnly = false;
         done.disabled = false;
+        done.classList.add('visible');
+        keyboard.disabled = false;
+        keyboard.classList.add('visible');
+        mobile.enable();
         setStatus('Could not return control; try again', 'error');
       }
     });
     rfb.addEventListener('disconnect', event => {
+      connected = false;
+      disableInput();
       if (handedBack) return;
       setStatus(event.detail.clean ? 'Handoff ended' : 'Connection lost', event.detail.clean ? '' : 'error');
     });
     rfb.addEventListener('credentialsrequired', () => rfb.sendCredentials({ password: capability }));
-    rfb.addEventListener('securityfailure', () => setStatus('Handoff authorization failed', 'error'));
+    rfb.addEventListener('securityfailure', () => {
+      connected = false;
+      disableInput();
+      rfb.viewOnly = true;
+      setStatus('Handoff authorization failed', 'error');
+    });
+    window.addEventListener('pagehide', () => {
+      connected = false;
+      disableInput();
+      rfb.disconnect();
+    });
   </script>
 </body>
 </html>
