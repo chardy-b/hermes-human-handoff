@@ -939,8 +939,9 @@ class HandoffWorker:
     def prepare_webroot(self, novnc: Path) -> Path:
         webroot = self.session_dir / "webroot"
         webroot.mkdir(mode=0o700)
-        source = Path(__file__).parent / "assets" / "handoff.html"
-        shutil.copy2(source, webroot / "handoff.html")
+        assets = Path(__file__).parent / "assets"
+        for name in ("handoff.html", "mobile-keyboard.js"):
+            shutil.copy2(assets / name, webroot / name)
         for name in ("core", "vendor"):
             source_dir = novnc / name
             if not source_dir.is_dir() or source_dir.is_symlink():

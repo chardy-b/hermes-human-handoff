@@ -170,6 +170,7 @@ Unit tests:
 
 ```bash
 python3 -m unittest discover -s tests -v
+node --test tests/mobile-keyboard.test.cjs
 ```
 
 Leak lint:
@@ -185,6 +186,54 @@ Live local smoke test:
 ```
 
 The smoke test launches the real Xvfb → x11vnc → websockify → Chromium path on loopback, checks the Chrome DevTools endpoint, proves the correct VNC capability renders, proves a wrong capability is refused, and verifies teardown. The local smoke does not prove Tailscale Serve transport; release operators should run a normal `start`, connect from a second Tailnet peer, and verify from that peer that the temporary route disappears after stop or expiry.
+
+### Mobile keyboard (HER-1)
+
+After connecting, tap a remote text field, then **Keyboard** beside **Done**.
+The button focuses a transient textarea synchronously to request the phone's
+native keyboard. Tap the remote browser again to return to ordinary noVNC
+keyboard handling. Desktop canvas keyboard handling is unchanged.
+
+The bridge forwards committed text as RFB keysyms, including Unicode code
+points, Backspace and Enter. IME preedit stays local until commitment; paired
+composition/input events are deduplicated. Input is cleared after each commit
+and on blur. Disconnect, authorization failure, page exit and pressing Done
+disable and clear the input. A failed Done request allows a fresh attempt only
+while the connection is still active. Clipboard transfer is blocked; typed text
+is never persisted or logged by the bridge. noVNC logging is explicitly disabled
+because its [sendKey implementation](https://github.com/novnc/noVNC/blob/v1.7.0/core/rfb.js)
+can log keysyms. Autocomplete, autocorrect, capitalization and spellcheck are
+requested off; a phone's keyboard/OS remains part of the trusted endpoint.
+
+The controls occupy their own row, and the visible frame follows
+`visualViewport` resize and scroll as the native keyboard opens. The helper is
+included in package data and copied into each worker's served webroot.
+
+Automated coverage uses Node's built-in test runner with synthetic DOM/RFB
+events, plus Python regression tests that fetch the actual worker's page and
+helper from a loopback static server. These tests do **not** prove native
+keyboard behavior or real remote text entry on a physical phone.
+
+**Remaining physical-phone gate (not yet run):** on both iOS Safari and Android
+Chrome, use only the included `qa/mobile-dummy.html` in an isolated test session.
+Do not use a live handoff, real credentials or a sensitive form. Record device,
+OS, browser and keyboard/IME versions, and pass/fail without recording typed
+values. Verify:
+
+- Tap a dummy field, then Keyboard: the native keyboard opens from that tap.
+- ASCII, accented text, non-Latin text and emoji arrive once; repeated
+  Backspace and Enter work. Commit and cancel IME candidates with no preedit
+  leakage, duplicate characters or duplicate Enter.
+- Open/close the keyboard, scroll and rotate: Keyboard, Done and the remote
+  field remain usable. Repeat field selection and keyboard activation.
+- Done, disconnect and authorization failure clear and disable input, including
+  during composition. A failed Done request never re-enables a lost connection.
+- A desktop physical keyboard still supports normal noVNC keys and shortcuts.
+
+Native IME event ordering, keyboard invocation, remote font/keymap support and
+phone viewport behavior remain unverified until that gate passes. The bridge
+provides transient insertion/deletion, not an editor with remote selection,
+undo history or autocorrect synchronization.
 
 ## Uninstall
 

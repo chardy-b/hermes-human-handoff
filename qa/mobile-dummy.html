@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mobile keyboard dummy form</title>
+<style>
+  body { font: 18px system-ui; max-width: 36rem; margin: 2rem auto; padding: 1rem; }
+  label, input, textarea, button { display: block; margin: 1rem 0; font: inherit; }
+  input, textarea { width: 100%; }
+</style>
+<h1>Dummy keyboard check</h1>
+<p>Use invented text only. This form does not submit, store, or log anything.</p>
+<form autocomplete="off">
+  <label>Dummy text <input autocomplete="off" spellcheck="false"></label>
+  <label>Dummy multiline text <textarea rows="5" autocomplete="off" spellcheck="false"></textarea></label>
+  <button type="reset">Clear dummy text</button>
+</form>
+<script>document.querySelector('form').addEventListener('submit', event => event.preventDefault());</script>
+</html>
