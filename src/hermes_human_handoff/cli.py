@@ -15,8 +15,8 @@ import socket
 import string
 import subprocess
 import sys
-import time
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -100,13 +100,21 @@ def mark_handed_back(session_dir: Path, capability: str) -> bool:
     """Acknowledge Done using the exact capability already used by VNC."""
     try:
         stored = read_json(session_dir / "capability.json").get("capability")
-        if not isinstance(stored, str) or not secrets.compare_digest(stored, capability):
+        if not isinstance(stored, str) or not secrets.compare_digest(
+            stored, capability
+        ):
             return False
         public_path = session_dir / "public.json"
         public = read_json(public_path)
         if public.get("status") != "ready":
             return False
-        public.update({"status": "handed_back", "completion": "done", "handed_back_at": iso_at(time.time())})
+        public.update(
+            {
+                "status": "handed_back",
+                "completion": "done",
+                "handed_back_at": iso_at(time.time()),
+            }
+        )
         atomic_json(public_path, public)
         return True
     except (FileNotFoundError, ValueError, TypeError):
@@ -305,7 +313,9 @@ def validate_profile_directory(path: Path, *, create: bool = False) -> Path:
         if create and not current.exists():
             current.mkdir(mode=0o700)
         if current.exists() and current.stat().st_mode & 0o022:
-            raise ValueError("browser profile path must not be writable by group or other users")
+            raise ValueError(
+                "browser profile path must not be writable by group or other users"
+            )
     if not profile.is_dir() or profile.is_symlink():
         raise ValueError("browser profile must be a real directory")
     if profile.stat().st_uid != os.getuid():
@@ -569,8 +579,7 @@ def remove_tailnet_route(route: dict[str, Any]) -> None:
             "refusing to remove a Tailscale route no longer owned by this session"
         )
     if done_target and (
-        route_path_proxy(current, dns_name, https_port, "/handoff-done")
-        != done_target
+        route_path_proxy(current, dns_name, https_port, "/handoff-done") != done_target
     ):
         raise RuntimeError(
             "refusing to remove a completion route no longer owned by this session"
@@ -603,7 +612,9 @@ def process_start_time(pid: int) -> int | None:
     try:
         # Field 2 (comm) is parenthesized and can contain spaces. Split after
         # its final ')' so field 22 (starttime) remains at a stable offset.
-        fields_after_comm = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        fields_after_comm = (
+            Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        )
         return int(fields_after_comm[19])
     except (OSError, IndexError, ValueError):
         return None
@@ -619,7 +630,9 @@ def process_matches(pid: int, expected: Any) -> bool:
 def worker_owned_by_session(
     pid: int, directory: Path, expected_start_time: Any = None
 ) -> bool:
-    if expected_start_time is not None and not process_matches(pid, expected_start_time):
+    if expected_start_time is not None and not process_matches(
+        pid, expected_start_time
+    ):
         return False
     command = process_cmdline(pid)
     return bool(
@@ -715,7 +728,9 @@ def session_worker_start_time(
         (runtime or {}).get("worker_start_time"),
     ]
     with contextlib.suppress(Exception):
-        candidates.append(read_json(directory / "launcher.json").get("worker_start_time"))
+        candidates.append(
+            read_json(directory / "launcher.json").get("worker_start_time")
+        )
     return next((candidate for candidate in candidates if candidate is not None), None)
 
 
@@ -911,7 +926,9 @@ class HandoffWorker:
             log.close()
         self.children.append((name, process))
         self.runtime["children"] = [{"name": n, "pid": p.pid} for n, p in self.children]
-        self.runtime.setdefault("child_start_times", {})[str(process.pid)] = process_start_time(process.pid)
+        self.runtime.setdefault("child_start_times", {})[str(process.pid)] = (
+            process_start_time(process.pid)
+        )
         self.write_runtime()
         return process
 
