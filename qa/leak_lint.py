@@ -7,10 +7,29 @@ import sys
 from pathlib import Path
 
 SKIP_PARTS = {".git", ".venv", ".ruff_cache", "__pycache__", "build", "dist"}
-INHERITED_NON_NOREPLY_COMMITS = {"e501358aa14a0c102303691a91a6a64d23d641c1"}
+# Exact historical exceptions preserve published history. The two later commits
+# contain already-public authorship metadata, not credential or file-content
+# leaks. These exceptions apply only to author-email checks, never file scanning
+# or future commits (even those with the same author).
+INHERITED_NON_NOREPLY_COMMITS = {
+    "e501358aa14a0c102303691a91a6a64d23d641c1",  # Original inherited exception.
+    "7b43ec768cb5ed3a33100d00931d8d1e59e0c932",
+    "f4d2712635098aeb9ad43615d086c25f005f313d",
+}
 TEXT_SUFFIXES = {
-    "", ".py", ".md", ".toml", ".yaml", ".yml", ".json", ".sh", ".html",
-    ".in", ".js", ".cjs", ".txt",
+    "",
+    ".py",
+    ".md",
+    ".toml",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".sh",
+    ".html",
+    ".in",
+    ".js",
+    ".cjs",
+    ".txt",
 }
 PATTERNS = {
     "absolute Linux user home": re.compile(

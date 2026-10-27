@@ -37,7 +37,9 @@ class CliUnitTests(unittest.TestCase):
                 self.assertNotIn("Test1234", url.split("#", 1)[0])
 
     def test_cache_nonce_is_independent_of_capability(self):
-        with mock.patch.object(cli.secrets, "token_hex", return_value="a" * 32) as random:
+        with mock.patch.object(
+            cli.secrets, "token_hex", return_value="a" * 32
+        ) as random:
             first = cli.build_handoff_url("https://node.invalid:9440", "Test1234")
             second = cli.build_handoff_url("https://node.invalid:9440", "Other123")
         self.assertEqual(random.call_args_list, [mock.call(16), mock.call(16)])
@@ -190,7 +192,9 @@ class CliUnitTests(unittest.TestCase):
             cli.atomic_json(directory / "public.json", {"status": "ready"})
             self.assertFalse(cli.mark_handed_back(directory, "wrongxxx"))
             self.assertTrue(cli.mark_handed_back(directory, "Ab12Cd34"))
-            self.assertEqual(cli.read_json(directory / "public.json")["completion"], "done")
+            self.assertEqual(
+                cli.read_json(directory / "public.json")["completion"], "done"
+            )
             self.assertFalse(cli.mark_handed_back(directory, "Ab12Cd34"))
 
     def test_handoff_page_done_control_is_not_in_url(self):
@@ -490,11 +494,15 @@ class CliUnitTests(unittest.TestCase):
                             self.assertEqual(response.status, 200)
                             self.assertEqual(
                                 response.read(),
-                                (ROOT / "src/hermes_human_handoff/assets" / name).read_bytes(),
+                                (
+                                    ROOT / "src/hermes_human_handoff/assets" / name
+                                ).read_bytes(),
                             )
                             if name.endswith(".js"):
-                                self.assertIn(response.headers.get_content_type(),
-                                              ("text/javascript", "application/javascript"))
+                                self.assertIn(
+                                    response.headers.get_content_type(),
+                                    ("text/javascript", "application/javascript"),
+                                )
                 finally:
                     server.shutdown()
                     thread.join()
@@ -506,11 +514,21 @@ class CliUnitTests(unittest.TestCase):
         self.assertIn("assets/*.js", (ROOT / "pyproject.toml").read_text())
         self.assertIn("from './mobile-keyboard.js'", page)
         self.assertIn("initLogging('none')", page)
-        for attribute in ('autocomplete="off"', 'autocorrect="off"',
-                          'autocapitalize="off"', 'spellcheck="false"'):
+        for attribute in (
+            'autocomplete="off"',
+            'autocorrect="off"',
+            'autocapitalize="off"',
+            'spellcheck="false"',
+        ):
             self.assertIn(attribute, page)
-        for forbidden in ("localStorage", "sessionStorage", "indexedDB",
-                          "clipboardPasteFrom", "console.", "navigator.clipboard"):
+        for forbidden in (
+            "localStorage",
+            "sessionStorage",
+            "indexedDB",
+            "clipboardPasteFrom",
+            "console.",
+            "navigator.clipboard",
+        ):
             self.assertNotIn(forbidden, page + bridge)
         self.assertNotIn("fetch(", bridge)
 
