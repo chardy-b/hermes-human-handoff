@@ -32,6 +32,13 @@ HTTPS_PORTS = range(9440, 9500)
 ORPHAN_STARTUP_GRACE = 60
 
 
+def build_handoff_url(base: str, capability: str) -> str:
+    # Fragments do not affect HTTP caches. Use independent randomness, never
+    # capability/session/host metadata, for the public per-session cache key.
+    nonce = secrets.token_hex(16)
+    return f"{base}/handoff.html?v={nonce}#{capability}"
+
+
 def utc_now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
@@ -1126,7 +1133,7 @@ class HandoffWorker:
                     f"https://{self.route['dns_name']}:{self.route['https_port']}"
                 )
 
-            handoff_url = f"{handoff_base}/handoff.html#{capability}"
+            handoff_url = build_handoff_url(handoff_base, capability)
             atomic_json(
                 self.session_dir / "capability.json",
                 {

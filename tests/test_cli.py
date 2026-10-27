@@ -13,6 +13,7 @@ import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -21,6 +22,27 @@ from hermes_human_handoff import cli  # noqa: E402
 
 
 class CliUnitTests(unittest.TestCase):
+    def test_handoff_urls_have_unique_public_cache_keys(self):
+        for base in ("http://127.0.0.1:6100", "https://node.invalid:9440"):
+            urls = [cli.build_handoff_url(base, "Test1234") for _ in range(100)]
+            requests = {url.split("#", 1)[0] for url in urls}
+            self.assertEqual(len(requests), 100)
+            for url in urls:
+                parsed = urlsplit(url)
+                self.assertEqual(parsed.fragment, "Test1234")
+                self.assertEqual(parsed.path, "/handoff.html")
+                query = parse_qs(parsed.query)
+                self.assertEqual(set(query), {"v"})
+                self.assertRegex(query["v"][0], r"^[a-f0-9]{32}$")
+                self.assertNotIn("Test1234", url.split("#", 1)[0])
+
+    def test_cache_nonce_is_independent_of_capability(self):
+        with mock.patch.object(cli.secrets, "token_hex", return_value="a" * 32) as random:
+            first = cli.build_handoff_url("https://node.invalid:9440", "Test1234")
+            second = cli.build_handoff_url("https://node.invalid:9440", "Other123")
+        self.assertEqual(random.call_args_list, [mock.call(16), mock.call(16)])
+        self.assertEqual(first.split("#")[0], second.split("#")[0])
+
     def test_doctor_verifies_serve_without_printing_tailnet_identity(self):
         args = type("Args", (), {"local_only": False})()
         report = {"ready": True, "missing": [], "tailscale": "/bin/tailscale"}
