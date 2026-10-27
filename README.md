@@ -180,11 +180,31 @@ Local browser cache regression (requires the Playwright Node module, or
 
 ```bash
 node --test qa/cache-bust.test.cjs
+HUMAN_HANDOFF_NOVNC_DIR=/path/to/noVNC node --test qa/mobile-viewport.test.cjs
 ```
 
 This uses a loopback HTTP server and mobile Chromium with real HTTP caching to
 verify that a fresh session link loads the current Keyboard controls and keeps
 the capability out of request URLs, headers, and referrers.
+
+The viewport test uses local noVNC v1.7.0 with a dummy transport and framebuffer.
+It checks 320/390/430 portrait, 568/844 landscape and desktop layouts, real RFB
+mouse/touch pan and click behavior, canvas dimensions and wire coordinates after
+view changes, rotation and keyboard resize, transient keyboard input, and Done
+authorization/retry with URL and referrer secrecy. The fixture intentionally uses
+pinned noVNC internals to seed the framebuffer and inspect emitted packets.
+Headless Chromium cannot open a native phone keyboard; its VisualViewport
+resize/scroll contract is simulated. Device safe-area insets and native IME still
+need phone verification.
+
+Phones start at readable **1:1 view** with **Pan** interaction: drag to move around the remote viewport;
+taps still click, as in noVNC. The interaction button names the current mode; tap it to switch between Pan and
+Click. **Click** mode sends drags to the remote browser.
+**Fit** shows the entire viewport and restores remote resize requests. Desktop
+starts in Fit with the toolbar at the top. Native view uses noVNC's public
+`scaleViewport`, `clipViewport`, and `dragViewport` properties, without CSS
+canvas scaling or a custom pinch-zoom implementation. Keyboard and Done stay in
+the safe-area-aware mobile bottom dock.
 
 Leak lint:
 

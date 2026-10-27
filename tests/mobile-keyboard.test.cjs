@@ -17,6 +17,7 @@ class Element {
     const classes = new Set();
     this.classList = { add: x => classes.add(x), remove: x => classes.delete(x), contains: x => classes.has(x) };
   }
+  setAttribute(name, value) { (this.attributes ||= {})[name] = value; }
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
   emit(type, data = {}) {
     const event = { type, prevented: false, stopped: false,
@@ -126,10 +127,11 @@ test('clipboard and drop are blocked, unknown input does not forward text', asyn
 });
 
 async function page(fetch = async () => ({ ok: true }), hash = '#Ab12Cd34') {
-  const elements = Object.fromEntries(['status', 'done', 'screen', 'keyboard', 'viewport', 'mobile-input'].map(id => [id, new Element()]));
+  const elements = Object.fromEntries(['status', 'done', 'screen', 'keyboard', 'viewport', 'mobile-input', 'fit', 'native', 'pointer', 'mode-feedback'].map(id => [id, new Element()]));
   // Reflect initial HTML disabled attributes in this small DOM test double.
   elements.keyboard.disabled = elements['mobile-input'].disabled = true;
   const window = new Element();
+  window.matchMedia = () => ({ matches: false });
   window.visualViewport = Object.assign(new Element(), { width: 390, height: 700, offsetLeft: 0, offsetTop: 0 });
   let rfb;
   let logging;
@@ -216,4 +218,25 @@ test('visualViewport resize and scroll keep frame within visible area', async ()
 
 test('invalid capability never creates an enabled bridge', async () => {
   await assert.rejects(page(undefined, '#invalid'), /invalid handoff capability/);
+});
+
+
+test('Fit/native/pointer controls use RFB semantics and lock during Done', async () => {
+  let reject;
+  const { elements: e, rfb } = await page(() => new Promise((_, no) => { reject = no; }));
+  rfb.emit('connect');
+  e.native.emit('click');
+  assert.deepEqual([rfb.scaleViewport, rfb.clipViewport, rfb.resizeSession, rfb.dragViewport], [false, true, false, true]);
+  e.pointer.emit('click');
+  assert.equal(rfb.dragViewport, false);
+  e.fit.emit('click');
+  assert.deepEqual([rfb.scaleViewport, rfb.clipViewport, rfb.resizeSession, rfb.dragViewport], [true, false, true, false]);
+  assert.equal(e.pointer.disabled, true);
+  const pending = e.done.emit('click').results;
+  e.native.emit('click');
+  assert.equal(rfb.scaleViewport, true);
+  assert.equal(e.native.disabled, true);
+  reject(new Error('dummy failure'));
+  await Promise.all(pending);
+  assert.equal(e.native.disabled, false);
 });

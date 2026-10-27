@@ -10,8 +10,8 @@
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #080a0f; }
     #viewport { position: absolute; inset: 0; display: flex; flex-direction: column; }
-    #screen { min-height: 0; flex: 1; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
-    #screen canvas { max-width: 100%; max-height: 100%; }
+    #screen { overflow: hidden; min-width: 0; min-height: 0; flex: 1; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+    /* noVNC owns canvas dimensions and pointer coordinate mapping. */
     #controls {
       position: relative; flex: none; justify-content: center; flex-wrap: wrap; padding: max(8px, env(safe-area-inset-top)) 8px 8px;
       z-index: 10; display: flex; align-items: center; gap: 10px;
@@ -26,15 +26,45 @@
     #done.visible, #keyboard.visible { display: inline-block; }
     #done:disabled, #keyboard:disabled { opacity: .65; cursor: wait; }
     #mobile-input { position: absolute; left: 50%; top: 0; width: 1px; height: 1px; opacity: .01; padding: 0; border: 0; font-size: 16px; pointer-events: none; }
+    button:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+    #view-controls { display: flex; gap: 6px; }
+    #view-controls button { min-height: 44px; padding: 8px 12px; border: 1px solid #536078; border-radius: 10px; color: #e3eaff; background: #161e2e; font: inherit; cursor: pointer; touch-action: manipulation; }
+    #view-controls button[aria-pressed="true"] { background: #284f8b; border-color: #a8caff; }
+    #view-controls button:disabled { opacity: .5; cursor: default; }
+    #mode-feedback { margin: 0; color: #becbe0; font-size: 12px; }
+    @media (max-width: 700px), (max-height: 500px) and (pointer: coarse) {
+      #viewport { padding-top: env(safe-area-inset-top); }
+      #controls { order: 2; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px;
+        padding: 8px max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+        border-top: 1px solid #303746; background: #101622; }
+      #status { grid-column: 1 / -1; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: none; font-size: 12px; }
+      #view-controls { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      #view-controls button, #keyboard, #done { min-height: 48px; padding: 8px; border-radius: 10px; font-size: 15px; }
+      #mode-feedback { grid-column: 1 / -1; line-height: 1.3; }
+      #screen { height: auto; }
+      #mobile-input { top: auto; bottom: 0; }
+    }
+    @media (max-height: 500px) and (min-width: 500px) and (pointer: coarse) {
+      #controls { grid-template-columns: minmax(0, 3fr) minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
+      #view-controls { grid-column: 1; grid-row: 2; }
+      #keyboard, #done { grid-row: 2; }
+      #mode-feedback { grid-column: 1 / -1; }
+    }
     #status.error { color: #ffc5c5; border-color: #8d3d48; }
   </style>
 </head>
 <body>
   <div id="viewport">
   <div id="controls">
-    <div id="status">Connecting…</div>
+    <div id="status" role="status">Connecting…</div>
+    <div id="view-controls" role="group" aria-label="Remote view and pointer mode">
+      <button id="fit" type="button" disabled aria-pressed="true">Fit view</button>
+      <button id="native" type="button" disabled aria-pressed="false">1:1 view</button>
+      <button id="pointer" aria-label="Current interaction: Click" aria-describedby="mode-feedback" type="button" disabled aria-pressed="false">Click</button>
+    </div>
     <button id="keyboard" type="button" disabled aria-label="Open keyboard for remote browser">Keyboard</button>
     <button id="done" type="button" aria-label="Done, return control to the agent">Done</button>
+    <p id="mode-feedback" aria-live="polite">Fit · tap to click</p>
   </div>
   <div id="screen" aria-label="Remote browser"></div>
   <textarea id="mobile-input" aria-label="Remote keyboard input" inputmode="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="-1" disabled></textarea>
@@ -76,17 +106,56 @@
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
     const basePath = location.pathname.replace(/[^/]*$/, '');
     const websocketUrl = `${scheme}://${location.host}${basePath}websockify`;
+    let nativeView = window.matchMedia('(max-width: 700px), (max-height: 500px) and (pointer: coarse)').matches;
+    let pan = nativeView;
     const rfb = new RFB(screen, websocketUrl, { credentials: { password: capability } });
-    rfb.scaleViewport = true;
-    rfb.resizeSession = true;
-    rfb.clipViewport = false;
+    rfb.scaleViewport = !nativeView;
+    rfb.resizeSession = !nativeView;
+    rfb.clipViewport = nativeView;
+    rfb.dragViewport = pan;
     rfb.viewOnly = false;
     rfb.background = '#080a0f';
+
+    const fit = document.getElementById('fit');
+    const native = document.getElementById('native');
+    const pointer = document.getElementById('pointer');
+    const feedback = document.getElementById('mode-feedback');
+    function updateView() {
+      // Public RFB APIs: native pixels + clipping allow noVNC to pan safely.
+      // Freeze remote size in native view so viewport/keyboard resize cannot
+      // shrink the framebuffer being inspected. Fit retains desktop behavior.
+      rfb.resizeSession = !nativeView;
+      rfb.scaleViewport = !nativeView;
+      rfb.clipViewport = nativeView;
+      rfb.dragViewport = nativeView && pan;
+      fit.setAttribute('aria-pressed', String(!nativeView));
+      native.setAttribute('aria-pressed', String(nativeView));
+      pointer.setAttribute('aria-pressed', String(nativeView && pan));
+      pointer.textContent = pan ? 'Pan' : 'Click';
+      pointer.setAttribute('aria-label', `Current interaction: ${pan ? 'Pan' : 'Click'}`);
+      pointer.disabled = !connected || !nativeView;
+      feedback.textContent = !nativeView ? 'View: Fit · Click: tap or drag remotely' : pan
+        ? 'View: 1:1 · Pan: drag to move; tap to click. Tap Pan for Click.'
+        : 'View: 1:1 · Click: tap or drag remotely. Tap Click for Pan.';
+    }
+    fit.addEventListener('click', () => {
+      if (!connected || fit.disabled) return;
+      nativeView = false; pan = false; updateView();
+    });
+    native.addEventListener('click', () => {
+      if (!connected || native.disabled) return;
+      nativeView = true; pan = true; updateView();
+    });
+    pointer.addEventListener('click', () => {
+      if (!connected || pointer.disabled) return;
+      pan = !pan; updateView();
+    });
 
     const mobile = createMobileKeyboard(document.getElementById('mobile-input'), keysym => rfb.sendKey(keysym));
     keyboard.addEventListener('click', () => mobile.focus());
     function disableInput() {
       mobile.disable();
+      fit.disabled = native.disabled = pointer.disabled = true;
       keyboard.disabled = true;
       keyboard.classList.remove('visible');
       done.disabled = true;
@@ -100,6 +169,8 @@
       keyboard.disabled = false;
       keyboard.classList.add('visible');
       mobile.enable();
+      fit.disabled = native.disabled = false;
+      updateView();
     });
     done.addEventListener('click', async () => {
       if (!connected || handedBack) return;
@@ -120,6 +191,8 @@
         keyboard.disabled = false;
         keyboard.classList.add('visible');
         mobile.enable();
+        fit.disabled = native.disabled = false;
+        updateView();
         setStatus('Could not return control; try again', 'error');
       }
     });

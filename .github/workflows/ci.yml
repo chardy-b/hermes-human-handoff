@@ -47,4 +47,15 @@ jobs:
           )
           echo "HUMAN_HANDOFF_BROWSER=$browser" >> "$GITHUB_ENV"
           echo "HUMAN_HANDOFF_NOVNC_DIR=/tmp/noVNC" >> "$GITHUB_ENV"
+      - name: Run keyboard and browser regressions
+        run: |
+          export HUMAN_HANDOFF_NOVNC_DIR=/tmp/noVNC
+          export HUMAN_HANDOFF_PLAYWRIGHT_MODULE=$(python - <<'PYTHON'
+          from pathlib import Path
+          import playwright
+          print(Path(playwright.__file__).resolve().parent / "driver" / "package")
+          PYTHON
+          )
+          node --test tests/mobile-keyboard.test.cjs
+          node --test qa/cache-bust.test.cjs qa/mobile-viewport.test.cjs
       - run: ./qa/smoke.sh
